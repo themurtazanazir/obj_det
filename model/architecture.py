@@ -46,7 +46,7 @@ class ModifiedFasterRCNN(nn.Module):
         )
         
         # Update backbone channels to match EfficientNet-B7's architecture
-        self.backbone_channels = [2560, 640, 384, 224]  # Channels from selected blocks
+        self.backbone_channels = [384, 224, 160, 160]
         
         # PANet FPN (will adapt input channels to 256)
         self.fpn = PANetFPN(self.backbone_channels, 256)
