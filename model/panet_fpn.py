@@ -43,8 +43,7 @@ class PANetFPN(nn.Module):
         """
         Args:
             features (List[Tensor]): List of feature maps from the backbone,
-                                   ordered from highest resolution to lowest
-        
+                                ordered from highest resolution to lowest
         Returns:
             tuple(Tensor): Tuple of feature maps after PANet FPN processing
         """
@@ -68,17 +67,25 @@ class PANetFPN(nn.Module):
         # Bottom-up pathway (Path Aggregation)
         outs = [laterals[0]]
         for i in range(used_backbone_levels - 1):
-            # Interpolate laterals[i+1] to match outs[-1] spatial dimensions
+            # First apply downsampling convolution
+            downsample = self.bottom_up_blocks[i](outs[-1])
+            
+            # Resize lateral connection to match downsampled dimensions
             resized_lateral = F.interpolate(
-                laterals[i + 1], 
-                size=outs[-1].shape[-2:],  # Match the spatial dimensions
+                laterals[i + 1],
+                size=downsample.shape[-2:],
                 mode='nearest'
             )
-            out = self.bottom_up_blocks[i](outs[-1]) + resized_lateral
+            
+            # Combine the features
+            out = downsample + resized_lateral
+            
+            # Apply final convolution for feature refinement
+            out = self.fpn_convs[i + 1](out)
+            
             outs.append(out)
-            
-        # Final convolutions for feature refinement
-        for i in range(used_backbone_levels):
-            outs[i] = self.fpn_convs[i](outs[i])
-            
+        
+        # Apply final convolution to the first output (wasn't done in the loop)
+        outs[0] = self.fpn_convs[0](outs[0])
+                
         return tuple(outs)
