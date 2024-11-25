@@ -53,14 +53,14 @@ class ModifiedFasterRCNN(nn.Module):
         
         # Extract specific layers from EfficientNet
         self.backbone_features = IntermediateLayerGetter(
-            self.backbone,
-            return_layers={
-                '_blocks.32': '0',  # P5
-                '_blocks.24': '1',  # P4
-                '_blocks.16': '2',  # P3
-                '_blocks.8': '3',   # P2
-            }
-        )
+                    self.backbone,
+                    return_indices={
+                        32: '0',  # P5
+                        24: '1',  # P4
+                        16: '2',  # P3
+                        8: '3',   # P2
+                    }
+                )
         
         # Get backbone channels
         self.backbone_channels = [2560, 2560, 2560, 2560]  # EfficientNet-B7 channels
