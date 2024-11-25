@@ -30,6 +30,7 @@ class CocoDataModule(pl.LightningDataModule):
         self.train_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            transforms.Resize((800, 800)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
@@ -37,6 +38,7 @@ class CocoDataModule(pl.LightningDataModule):
         # Just normalization for validation
         self.val_transform = transforms.Compose([
             transforms.ToTensor(),
+            transforms.Resize((800, 800)),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         

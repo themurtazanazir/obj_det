@@ -13,28 +13,18 @@
 #SBATCH --mail-user=your.email@domain.com  # Email address
 
 # Load necessary modules (adjust based on your cluster setup)
-module purge
-module load cuda/11.8
-module load anaconda/3
-
-# Activate conda environment
-source activate frcnn_env
-
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
 # Set cache directories for huggingface and torch hub
-export HF_HOME=$HOME/.cache/huggingface
+export HF_HOME=/data/inversion/huggingface/
 export TORCH_HOME=$HOME/.cache/torch
 
 # Set environment variables for distributed training
-export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
-export WORLD_SIZE=$(($SLURM_NNODES * $(nvidia-smi -L | wc -l)))
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 
 # Directory setup
-PROJ_DIR=$HOME/faster-rcnn-project  # Adjust to your project directory
-DATA_DIR=/path/to/coco/dataset      # Adjust to your data directory
+PROJ_DIR=./  # Adjust to your project directory
+DATA_DIR=/data/coco      # Adjust to your data directory
 OUTPUT_DIR=$PROJ_DIR/outputs
 
 # Create output directory
@@ -55,7 +45,7 @@ python train.py \
     --learning_rate 1e-4 \
     --weight_decay 1e-4 \
     --max_epochs 100 \
-    --num_gpus 4 \
+    --num_gpus 1 \
     --use_amp true \
     --gradient_clip_val 0.1 \
     --accumulate_grad_batches 1 \
@@ -65,4 +55,3 @@ python train.py \
 # cp -r $OUTPUT_DIR /path/to/backup/location/
 
 # Deactivate conda environment
-conda deactivate

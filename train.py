@@ -53,7 +53,7 @@ def main(args):
         max_epochs=args.max_epochs,
         accelerator='gpu',
         devices=args.num_gpus,
-        strategy=DDPStrategy(find_unused_parameters=True) if args.num_gpus > 1 else None,
+        strategy=DDPStrategy(find_unused_parameters=True) if args.num_gpus > 1 else "auto",
         callbacks=[checkpoint_callback, lr_monitor],
         logger=wandb_logger,
         precision=16 if args.use_amp else 32,
