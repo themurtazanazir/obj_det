@@ -1,214 +1,69 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Dict, List, Tuple, Optional
 from efficientnet_pytorch import EfficientNet
-from torchvision.ops import MultiScaleRoIAlign, nms
+from torchvision.ops import MultiScaleRoIAlign, box_iou, nms
 from torchvision.models.detection.rpn import RegionProposalNetwork, RPNHead, AnchorGenerator
-from collections import OrderedDict
-import math
 
-class PANetFPN(nn.Module):
-    """Path Aggregation Network (PANet) implementation"""
-    def __init__(self, in_channels_list, out_channels):
-        super(PANetFPN, self).__init__()
-        
-        # Bottom-up pathway
-        self.lateral_convs = nn.ModuleList()
-        self.fpn_convs = nn.ModuleList()
-        
-        for in_channels in in_channels_list:
-            lateral_conv = nn.Conv2d(in_channels, out_channels, 1)
-            fpn_conv = nn.Conv2d(out_channels, out_channels, 3, padding=1)
-            
-            # Initialize weights
-            nn.init.kaiming_normal_(lateral_conv.weight, mode='fan_out', nonlinearity='relu')
-            nn.init.kaiming_normal_(fpn_conv.weight, mode='fan_out', nonlinearity='relu')
-            nn.init.constant_(lateral_conv.bias, 0)
-            nn.init.constant_(fpn_conv.bias, 0)
-            
-            self.lateral_convs.append(lateral_conv)
-            self.fpn_convs.append(fpn_conv)
-            
-        # Top-down pathway
-        self.top_down_blocks = nn.ModuleList()
-        for _ in range(len(in_channels_list) - 1):
-            conv = nn.Conv2d(out_channels, out_channels, 3, padding=1)
-            nn.init.kaiming_normal_(conv.weight, mode='fan_out', nonlinearity='relu')
-            nn.init.constant_(conv.bias, 0)
-            self.top_down_blocks.append(conv)
-            
-        # Bottom-up pathway (Path Aggregation)
-        self.bottom_up_blocks = nn.ModuleList()
-        for _ in range(len(in_channels_list) - 1):
-            conv = nn.Conv2d(out_channels, out_channels, 3, stride=2, padding=1)
-            nn.init.kaiming_normal_(conv.weight, mode='fan_out', nonlinearity='relu')
-            nn.init.constant_(conv.bias, 0)
-            self.bottom_up_blocks.append(conv)
-            
-    def forward(self, x):
-        # Bottom-up pathway (initial)
-        features = x
-        laterals = []
-        
-        for i, feature in enumerate(features):
-            laterals.append(self.lateral_convs[i](feature))
-            
-        # Top-down pathway
-        used_backbone_levels = len(laterals)
-        for i in range(used_backbone_levels - 1, 0, -1):
-            # Upsample
-            laterals[i - 1] = laterals[i - 1] + F.interpolate(
-                laterals[i], size=laterals[i - 1].shape[-2:], mode='nearest')
-            # Additional convolution
-            laterals[i - 1] = self.top_down_blocks[used_backbone_levels - i - 1](laterals[i - 1])
-            
-        # Bottom-up pathway (Path Aggregation)
-        outs = [laterals[0]]
-        for i in range(used_backbone_levels - 1):
-            out = self.bottom_up_blocks[i](outs[-1])
-            out = out + laterals[i + 1]  # Skip connection
-            outs.append(out)
-            
-        # Final convolutions
-        results = []
-        for i, out in enumerate(outs):
-            results.append(self.fpn_convs[i](out))
-            
-        return tuple(results)
-
-class IntermediateLayerGetter(nn.ModuleDict):
-    """
-    Module wrapper that returns intermediate layers from a model
-    """
-    def __init__(self, model, return_layers, hrnet_flag=False):
-        if not set(return_layers).issubset([name for name, _ in model.named_modules()]):
-            raise ValueError("return_layers are not present in model")
-            
-        orig_return_layers = return_layers
-        return_layers = {str(k): str(v) for k, v in return_layers.items()}
-        layers = OrderedDict()
-        
-        # Reorganize modules for EfficientNet
-        for name, module in model.named_children():
-            layers[name] = module
-            if name == '_blocks':  # Special handling for EfficientNet blocks
-                break
-                
-        super().__init__(layers)
-        self.return_layers = orig_return_layers
-
-    def forward(self, x):
-        out = OrderedDict()
-        for name, module in self.items():
-            if name == '_blocks':
-                # Handle EfficientNet blocks specially
-                block_outputs = []
-                current_block = 0
-                
-                for block in module:
-                    x = block(x)
-                    if f'_blocks.{current_block}' in self.return_layers:
-                        out_name = self.return_layers[f'_blocks.{current_block}']
-                        out[out_name] = x
-                    current_block += 1
-            else:
-                x = module(x)
-                if name in self.return_layers:
-                    out_name = self.return_layers[name]
-                    out[out_name] = x
-                    
-        return list(out.values())
-
-class BoxCoder:
-    """
-    This class encodes and decodes boxes from/to regression parameters
-    """
-    def __init__(self, weights=(1.0, 1.0, 1.0, 1.0), bbox_xform_clip=math.log(1000. / 16)):
-        self.weights = weights
-        self.bbox_xform_clip = bbox_xform_clip
-
-    def encode(self, reference_boxes, proposals):
-        """
-        Encode a set of proposals with respect to some reference boxes
-        """
-        ex_widths = proposals[:, 2] - proposals[:, 0]
-        ex_heights = proposals[:, 3] - proposals[:, 1]
-        ex_ctr_x = proposals[:, 0] + 0.5 * ex_widths
-        ex_ctr_y = proposals[:, 1] + 0.5 * ex_heights
-
-        gt_widths = reference_boxes[:, 2] - reference_boxes[:, 0]
-        gt_heights = reference_boxes[:, 3] - reference_boxes[:, 1]
-        gt_ctr_x = reference_boxes[:, 0] + 0.5 * gt_widths
-        gt_ctr_y = reference_boxes[:, 1] + 0.5 * gt_heights
-
-        wx, wy, ww, wh = self.weights
-        targets_dx = wx * (gt_ctr_x - ex_ctr_x) / ex_widths
-        targets_dy = wy * (gt_ctr_y - ex_ctr_y) / ex_heights
-        targets_dw = ww * torch.log(gt_widths / ex_widths)
-        targets_dh = wh * torch.log(gt_heights / ex_heights)
-
-        targets = torch.stack((targets_dx, targets_dy, targets_dw, targets_dh), dim=1)
-        return targets
-
-    def decode(self, rel_codes, boxes):
-        """
-        From a set of original boxes and encoded relative box offsets,
-        get the decoded boxes.
-        """
-        boxes = boxes.to(rel_codes.dtype)
-
-        TO_REMOVE = 1  # TODO remove
-        widths = boxes[:, 2] - boxes[:, 0] + TO_REMOVE
-        heights = boxes[:, 3] - boxes[:, 1] + TO_REMOVE
-        ctr_x = boxes[:, 0] + 0.5 * widths
-        ctr_y = boxes[:, 1] + 0.5 * heights
-
-        wx, wy, ww, wh = self.weights
-        dx = rel_codes[:, 0::4] / wx
-        dy = rel_codes[:, 1::4] / wy
-        dw = rel_codes[:, 2::4] / ww
-        dh = rel_codes[:, 3::4] / wh
-
-        # Prevent sending too large values into torch.exp()
-        dw = torch.clamp(dw, max=self.bbox_xform_clip)
-        dh = torch.clamp(dh, max=self.bbox_xform_clip)
-
-        pred_ctr_x = dx * widths[:, None] + ctr_x[:, None]
-        pred_ctr_y = dy * heights[:, None] + ctr_y[:, None]
-        pred_w = torch.exp(dw) * widths[:, None]
-        pred_h = torch.exp(dh) * heights[:, None]
-
-        pred_boxes = torch.zeros_like(rel_codes)
-        # x1
-        pred_boxes[:, 0::4] = pred_ctr_x - 0.5 * pred_w
-        # y1
-        pred_boxes[:, 1::4] = pred_ctr_y - 0.5 * pred_h
-        # x2
-        pred_boxes[:, 2::4] = pred_ctr_x + 0.5 * pred_w
-        # y2
-        pred_boxes[:, 3::4] = pred_ctr_y + 0.5 * pred_h
-
-        return pred_boxes
+from .panet_fpn import PANetFPN
+from .intermediate_layer_getter import IntermediateLayerGetter, ImageList
 
 class ModifiedFasterRCNN(nn.Module):
-    """Modified Faster R-CNN with EfficientNet-B7 backbone and PANet"""
-    def __init__(self, num_classes, pretrained=True):
+    """
+    Modified Faster R-CNN with EfficientNet-B7 backbone and PANet FPN.
+    
+    Args:
+        num_classes (int): Number of output classes (including background)
+        pretrained (bool): If True, use pretrained EfficientNet-B7 backbone
+        min_size (int): Minimum size of the image to be rescaled before feeding it to the backbone
+        max_size (int): Maximum size of the image to be rescaled before feeding it to the backbone
+        image_mean (List[float]): Mean values used for input normalization
+        image_std (List[float]): Std values used for input normalization
+        
+    Attributes:
+        transform (GeneralizedRCNNTransform): Performs the data transformation from images and targets
+        backbone (EfficientNet): The backbone network (EfficientNet-B7)
+        fpn (PANetFPN): Feature Pyramid Network with PANet
+        rpn (RegionProposalNetwork): Region Proposal Network
+        roi_align (MultiScaleRoIAlign): RoI Align operation
+        box_head (nn.Sequential): Box head for feature extraction
+        cls_head (nn.Linear): Classification head
+        reg_head (nn.Linear): Regression head
+    """
+    
+    def __init__(
+        self,
+        num_classes: int,
+        pretrained: bool = True,
+        min_size: int = 800,
+        max_size: int = 1333,
+        image_mean: Optional[List[float]] = None,
+        image_std: Optional[List[float]] = None
+    ):
         super(ModifiedFasterRCNN, self).__init__()
         
+        if image_mean is None:
+            image_mean = [0.485, 0.456, 0.406]
+        if image_std is None:
+            image_std = [0.229, 0.224, 0.225]
+            
         # EfficientNet-B7 backbone
         self.backbone = EfficientNet.from_pretrained('efficientnet-b7') if pretrained else EfficientNet.from_name('efficientnet-b7')
         
-        # Extract feature channels from EfficientNet
-        self.backbone_channels = [2560, 2560, 2560, 2560]  # EfficientNet-B7 channels
+        # Extract specific layers from EfficientNet
         self.backbone_features = IntermediateLayerGetter(
             self.backbone,
             return_layers={
-                '_blocks.32': '0',
-                '_blocks.24': '1',
-                '_blocks.16': '2',
-                '_blocks.8': '3',
+                '_blocks.32': '0',  # P5
+                '_blocks.24': '1',  # P4
+                '_blocks.16': '2',  # P3
+                '_blocks.8': '3',   # P2
             }
         )
+        
+        # Get backbone channels
+        self.backbone_channels = [2560, 2560, 2560, 2560]  # EfficientNet-B7 channels
         
         # PANet FPN
         self.fpn = PANetFPN(self.backbone_channels, 256)
@@ -223,7 +78,7 @@ class ModifiedFasterRCNN(nn.Module):
         # Region Proposal Network
         anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
         aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
-        self.anchor_generator = AnchorGenerator(
+        rpn_anchor_generator = AnchorGenerator(
             sizes=anchor_sizes,
             aspect_ratios=aspect_ratios
         )
@@ -234,7 +89,7 @@ class ModifiedFasterRCNN(nn.Module):
         )
         
         self.rpn = RegionProposalNetwork(
-            anchor_generator=self.anchor_generator,
+            anchor_generator=rpn_anchor_generator,
             head=rpn_head,
             fg_iou_thresh=0.7,
             bg_iou_thresh=0.3,
@@ -246,81 +101,173 @@ class ModifiedFasterRCNN(nn.Module):
         )
         
         # Box head
+        representation_size = 1024
         self.box_head = nn.Sequential(
-            nn.Linear(256 * 7 * 7, 1024),
+            nn.Flatten(start_dim=1),
+            nn.Linear(256 * 7 * 7, representation_size),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(1024, 1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2)
+            nn.Linear(representation_size, representation_size),
+            nn.ReLU(inplace=True)
         )
         
-        # Separate box predictor heads
-        self.cls_score = nn.Linear(1024, num_classes)
-        self.bbox_pred = nn.Linear(1024, num_classes * 4)
+        # Separate prediction heads
+        self.cls_head = nn.Linear(representation_size, num_classes)
+        self.reg_head = nn.Linear(representation_size, num_classes * 4)
         
         # Initialize weights
-        for module in [self.cls_score, self.bbox_pred]:
-            nn.init.normal_(module.weight, std=0.01)
-            nn.init.constant_(module.bias, 0)
-            
-        self.box_coder = BoxCoder()
-        self.score_thresh = 0.05
-        self.nms_thresh = 0.5
-        self.detections_per_img = 100
-        self.num_classes = num_classes
-        
-    def forward(self, images, targets=None):
+        for module in [self.box_head, self.cls_head, self.reg_head]:
+            for layer in module.modules():
+                if isinstance(layer, nn.Linear):
+                    nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
+                    nn.init.constant_(layer.bias, 0)
+    
+    def forward(
+        self,
+        images: List[torch.Tensor],
+        targets: Optional[List[Dict[str, torch.Tensor]]] = None
+    ) -> Dict[str, torch.Tensor]:
         """
-        Arguments:
-            images (list[Tensor]): images to be processed
-            targets (list[Dict[str, Tensor]]): ground-truth boxes present in the image (optional)
+        Args:
+            images (List[torch.Tensor]): Images to be processed
+            targets (List[Dict[str, torch.Tensor]], optional): Ground-truth boxes and labels
+            
+        Returns:
+            Dict[str, torch.Tensor]: During training, returns a dictionary of losses
+                                   During inference, returns detected boxes, labels, and scores
         """
         if self.training and targets is None:
             raise ValueError("In training mode, targets should be passed")
             
+        # Handle image batching
         if isinstance(images, (list, tuple)):
-            images = torch.stack(images)
+            max_size = tuple(max(s) for s in zip(*[img.shape[-2:] for img in images]))
+            batch_shape = (len(images),) + images[0].shape[:-2] + max_size
+            batched_imgs = images[0].new_full(batch_shape, 0)
             
-        original_image_sizes = [(img.shape[-2], img.shape[-1]) for img in images]
+            for img, pad_img in zip(images, batched_imgs):
+                pad_img[..., :img.shape[-2], :img.shape[-1]].copy_(img)
+                
+            image_sizes = [img.shape[-2:] for img in images]
+            images = ImageList(batched_imgs, image_sizes)
         
         # Get backbone features
-        features = self.backbone_features(images)
+        features = self.backbone_features(images.tensors)
         
         # Apply PANet FPN
         fpn_features = self.fpn(features)
         
-        # Convert FPN features to dict for RPN and RoI heads
-        feature_dict = {str(i): feature for i, feature in enumerate(fpn_features)}
-        
         # Generate proposals
-        proposals, proposal_losses = self.rpn(images, feature_dict, targets)
-        
-        # Create empty dict for all losses
-        losses = {}
-        
-        # If training, add RPN losses
-        if self.training:
-            losses.update(proposal_losses)
-        
-        # Get ROI features
-        box_features = self.roi_align(
-            feature_dict,
-            proposals,
-            original_image_sizes
+        proposals, rpn_losses = self.rpn(
+            images,
+            fpn_features,
+            targets
         )
         
-        # Apply box head
-        box_features = self.box_head(box_features.flatten(start_dim=1))
-        
-        # Get class scores and box regression
-        class_logits = self.cls_score(box_features)
-        box_regression = self.bbox_pred(box_features)
-        
         if self.training:
-            # Calculate classification and box regression losses
-            gt_labels = torch.cat([t["labels"] for t in targets], dim=0)
-            gt_boxes = torch.cat([t["boxes"] for t in targets], dim=0)
+            # Apply RoI Align and get pooled features
+            pooled_features = self.roi_align(
+                fpn_features,
+                proposals,
+                images.image_sizes
+            )
             
-            classification_loss = F.cross_entropy(class_logits, gt_labels)
-            box_loss = F.smooth_l1_loss(box_regression, gt_
+            # Box head
+            box_features = self.box_head(pooled_features)
+            
+            # Predictions
+            class_logits = self.cls_head(box_features)
+            box_regression = self.reg_head(box_features)
+            
+            # Calculate losses
+            return {
+                'loss_classifier': F.cross_entropy(class_logits, targets['labels']),
+                'loss_box_reg': F.smooth_l1_loss(box_regression, targets['boxes']),
+                **rpn_losses
+            }
+        else:
+            # Inference mode
+            pooled_features = self.roi_align(
+                fpn_features,
+                proposals,
+                images.image_sizes
+            )
+            
+            box_features = self.box_head(pooled_features)
+            class_logits = self.cls_head(box_features)
+            box_regression = self.reg_head(box_features)
+            
+            return self.postprocess_detections(
+                class_logits,
+                box_regression,
+                proposals,
+                images.image_sizes
+            )
+            
+    def postprocess_detections(
+        self,
+        class_logits: torch.Tensor,
+        box_regression: torch.Tensor,
+        proposals: List[torch.Tensor],
+        image_sizes: List[Tuple[int, int]]
+    ) -> List[Dict[str, torch.Tensor]]:
+        """
+        Perform post-processing on the outputs of the detector.
+        
+        Args:
+            class_logits (Tensor): Classification predictions
+            box_regression (Tensor): Box regression predictions
+            proposals (List[Tensor]): Proposed regions
+            image_sizes (List[Tuple[int, int]]): Original image sizes
+            
+        Returns:
+            List[Dict[str, Tensor]]: List of dictionaries containing:
+                - boxes (Tensor): Predicted boxes
+                - labels (Tensor): Predicted labels
+                - scores (Tensor): Prediction scores
+        """
+        device = class_logits.device
+        num_classes = class_logits.shape[-1]
+        boxes_per_image = [boxes_in_image.shape[0] for boxes_in_image in proposals]
+        
+        # Apply softmax to class predictions
+        pred_scores = F.softmax(class_logits, -1)
+        
+        # Split predictions per image
+        pred_boxes = box_regression.split(boxes_per_image, 0)
+        pred_scores = pred_scores.split(boxes_per_image, 0)
+        
+        results = []
+        for boxes, scores, image_size in zip(pred_boxes, pred_scores, image_sizes):
+            # Create labels for each prediction
+            labels = torch.arange(num_classes, device=device)
+            labels = labels.view(1, -1).expand_as(scores)
+            
+            # Remove predictions with the background label
+            boxes = boxes[:, 1:]
+            scores = scores[:, 1:]
+            labels = labels[:, 1:]
+            
+            # Flatten predictions
+            boxes = boxes.reshape(-1, 4)
+            scores = scores.reshape(-1)
+            labels = labels.reshape(-1)
+            
+            # Remove low scoring boxes
+            inds = torch.where(scores > 0.05)[0]
+            boxes, scores, labels = boxes[inds], scores[inds], labels[inds]
+            
+            # Apply NMS
+            keep = nms(boxes, scores, 0.5)
+            boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+            
+            # Keep top-k scoring predictions
+            keep = torch.argsort(scores, dim=0, descending=True)[:100]
+            boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+            
+            results.append({
+                "boxes": boxes,
+                "labels": labels,
+                "scores": scores,
+            })
+            
+        return results
