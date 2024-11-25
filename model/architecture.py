@@ -10,28 +10,6 @@ from .panet_fpn import PANetFPN
 from .intermediate_layer_getter import IntermediateLayerGetter, ImageList
 
 class ModifiedFasterRCNN(nn.Module):
-    """
-    Modified Faster R-CNN with EfficientNet-B7 backbone and PANet FPN.
-    
-    Args:
-        num_classes (int): Number of output classes (including background)
-        pretrained (bool): If True, use pretrained EfficientNet-B7 backbone
-        min_size (int): Minimum size of the image to be rescaled before feeding it to the backbone
-        max_size (int): Maximum size of the image to be rescaled before feeding it to the backbone
-        image_mean (List[float]): Mean values used for input normalization
-        image_std (List[float]): Std values used for input normalization
-        
-    Attributes:
-        transform (GeneralizedRCNNTransform): Performs the data transformation from images and targets
-        backbone (EfficientNet): The backbone network (EfficientNet-B7)
-        fpn (PANetFPN): Feature Pyramid Network with PANet
-        rpn (RegionProposalNetwork): Region Proposal Network
-        roi_align (MultiScaleRoIAlign): RoI Align operation
-        box_head (nn.Sequential): Box head for feature extraction
-        cls_head (nn.Linear): Classification head
-        reg_head (nn.Linear): Regression head
-    """
-    
     def __init__(
         self,
         num_classes: int,
@@ -51,21 +29,26 @@ class ModifiedFasterRCNN(nn.Module):
         # EfficientNet-B7 backbone
         self.backbone = EfficientNet.from_pretrained('efficientnet-b7') if pretrained else EfficientNet.from_name('efficientnet-b7')
         
-        # Extract specific layers from EfficientNet
+        # Extract features from these blocks
+        # EfficientNet-B7 block output channels:
+        # Block 18: 224 channels
+        # Block 25: 384 channels
+        # Block 31: 640 channels
+        # Block 38: 2560 channels
         self.backbone_features = IntermediateLayerGetter(
-                    self.backbone,
-                    return_indices={
-                        32: '0',  # P5
-                        24: '1',  # P4
-                        16: '2',  # P3
-                        8: '3',   # P2
-                    }
-                )
+            self.backbone,
+            return_indices={
+                38: '0',  # Highest level feature (2560 channels)
+                31: '1',  # (640 channels)
+                25: '2',  # (384 channels)
+                18: '3'   # (224 channels)
+            }
+        )
         
-        # Get backbone channels
-        self.backbone_channels = [2560, 2560, 2560, 2560]  # EfficientNet-B7 channels
+        # Update backbone channels to match EfficientNet-B7's architecture
+        self.backbone_channels = [2560, 640, 384, 224]  # Channels from selected blocks
         
-        # PANet FPN
+        # PANet FPN (will adapt input channels to 256)
         self.fpn = PANetFPN(self.backbone_channels, 256)
         
         # RoI Align
@@ -120,25 +103,12 @@ class ModifiedFasterRCNN(nn.Module):
                 if isinstance(layer, nn.Linear):
                     nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
                     nn.init.constant_(layer.bias, 0)
-    
-    def forward(
-        self,
-        images: List[torch.Tensor],
-        targets: Optional[List[Dict[str, torch.Tensor]]] = None
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Args:
-            images (List[torch.Tensor]): Images to be processed
-            targets (List[Dict[str, torch.Tensor]], optional): Ground-truth boxes and labels
-            
-        Returns:
-            Dict[str, torch.Tensor]: During training, returns a dictionary of losses
-                                   During inference, returns detected boxes, labels, and scores
-        """
+                    
+    def forward(self, images, targets=None):
         if self.training and targets is None:
             raise ValueError("In training mode, targets should be passed")
             
-        # Handle image batching
+        # Handle single image or list of images
         if isinstance(images, (list, tuple)):
             max_size = tuple(max(s) for s in zip(*[img.shape[-2:] for img in images]))
             batch_shape = (len(images),) + images[0].shape[:-2] + max_size
@@ -149,13 +119,17 @@ class ModifiedFasterRCNN(nn.Module):
                 
             image_sizes = [img.shape[-2:] for img in images]
             images = ImageList(batched_imgs, image_sizes)
-        
+            
         # Get backbone features
+        print("Input image shape:", images.tensors.shape)
         features = self.backbone_features(images.tensors)
+        print("Features extracted. Number of feature maps:", len(features))
         
         # Apply PANet FPN
         fpn_features = self.fpn(features)
-        
+        print("FPN features computed. Shapes:")
+        for idx, feat in enumerate(fpn_features):
+            print(f"FPN level {idx} shape: {feat.shape}")
         # Generate proposals
         proposals, rpn_losses = self.rpn(
             images,

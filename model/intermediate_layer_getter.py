@@ -7,22 +7,17 @@ class IntermediateLayerGetter(nn.ModuleDict):
     """
     Module wrapper that returns intermediate layers from a model.
     Specifically designed to work with EfficientNet backbone.
-    
-    Args:
-        model (nn.Module): Model to extract features from
-        return_indices (Dict[int, str]): Dictionary mapping block indices to 
-            desired output names
     """
     def __init__(self, model: nn.Module, return_indices: Dict[int, str]) -> None:
         self.return_indices = return_indices
         
         # Store the blocks we need
-        blocks = []
-        if hasattr(model, '_blocks'):
-            max_idx = max(return_indices.keys())
-            blocks = list(model._blocks[:max_idx + 1])
-        else:
+        if not hasattr(model, '_blocks'):
             raise ValueError("Model does not have _blocks attribute")
+            
+        # Get all blocks up to the maximum index we need
+        max_idx = max(return_indices.keys())
+        blocks = list(model._blocks[:max_idx + 1])
             
         # Create ordered dict of layers
         layers = OrderedDict()
@@ -52,6 +47,8 @@ class IntermediateLayerGetter(nn.ModuleDict):
             if idx in self.return_indices:
                 out_name = self.return_indices[idx]
                 out[out_name] = x
+                # Print shape for debugging
+                print(f"Feature shape at block {idx}: {x.shape}")
                 
         # Return features in the order specified by return_layers
         return [out[name] for name in sorted(out.keys())]
