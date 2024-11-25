@@ -128,7 +128,7 @@ class ModifiedFasterRCNN(nn.Module):
         # Apply PANet FPN
         fpn_features = self.fpn(features)
         print("FPN features computed. Shapes:")
-        for idx, feat in enumerate(fpn_features):
+        for idx, feat in fpn_features.items():
             print(f"FPN level {idx} shape: {feat.shape}")
         # Generate proposals
         proposals, rpn_losses = self.rpn(fpn_features, images.image_sizes, targets)
