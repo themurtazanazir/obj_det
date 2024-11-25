@@ -131,11 +131,7 @@ class ModifiedFasterRCNN(nn.Module):
         for idx, feat in enumerate(fpn_features):
             print(f"FPN level {idx} shape: {feat.shape}")
         # Generate proposals
-        proposals, rpn_losses = self.rpn(
-            images,
-            fpn_features,
-            targets
-        )
+        proposals, rpn_losses = self.rpn(fpn_features, images.image_sizes, targets)
         
         if self.training:
             # Apply RoI Align and get pooled features
