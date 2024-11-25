@@ -63,6 +63,7 @@ class CocoDataModule(pl.LightningDataModule):
         labels = []
         area = []
         iscrowd = []
+        image_ids = []  # Added this
         
         for annotation in target:
             bbox = annotation['bbox']
@@ -77,16 +78,28 @@ class CocoDataModule(pl.LightningDataModule):
             labels.append(annotation['category_id'])
             area.append(annotation['area'])
             iscrowd.append(annotation['iscrowd'])
+            image_ids.append(annotation['image_id'])  # Added this
         
-        target_dict = {
-            'boxes': torch.tensor(boxes, dtype=torch.float32),
-            'labels': torch.tensor(labels, dtype=torch.int64),
-            'area': torch.tensor(area),
-            'iscrowd': torch.tensor(iscrowd)
-        }
+        # If we have any annotations
+        if boxes:
+            target_dict = {
+                'boxes': torch.tensor(boxes, dtype=torch.float32),
+                'labels': torch.tensor(labels, dtype=torch.int64),
+                'area': torch.tensor(area),
+                'iscrowd': torch.tensor(iscrowd),
+                'image_id': torch.tensor(image_ids[0])  # Use the first one since all should be same
+            }
+        else:
+            # Handle empty annotations
+            target_dict = {
+                'boxes': torch.zeros((0, 4), dtype=torch.float32),
+                'labels': torch.zeros(0, dtype=torch.int64),
+                'area': torch.zeros(0),
+                'iscrowd': torch.zeros(0),
+                'image_id': torch.tensor(0)  # You might want to handle this case differently
+            }
         
-        return target_dict
-    
+        return target_dict    
     def collate_fn(self, batch):
         """Custom collate function to handle variable size inputs"""
         images = []
