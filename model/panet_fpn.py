@@ -68,8 +68,13 @@ class PANetFPN(nn.Module):
         # Bottom-up pathway (Path Aggregation)
         outs = [laterals[0]]
         for i in range(used_backbone_levels - 1):
-            # Downsample current level and add feature from lateral path
-            out = self.bottom_up_blocks[i](outs[-1]) + laterals[i + 1]
+            # Interpolate laterals[i+1] to match outs[-1] spatial dimensions
+            resized_lateral = F.interpolate(
+                laterals[i + 1], 
+                size=outs[-1].shape[-2:],  # Match the spatial dimensions
+                mode='nearest'
+            )
+            out = self.bottom_up_blocks[i](outs[-1]) + resized_lateral
             outs.append(out)
             
         # Final convolutions for feature refinement
