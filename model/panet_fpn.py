@@ -88,4 +88,4 @@ class PANetFPN(nn.Module):
         # Apply final convolution to the first output (wasn't done in the loop)
         outs[0] = self.fpn_convs[0](outs[0])
                 
-        return {str(i): out for i, out in enumerate(outs)}
+        return {k: v for k, v in enumerate(outs)}

@@ -126,7 +126,7 @@ class ModifiedFasterRCNN(nn.Module):
         print("Features extracted. Number of feature maps:", len(features))
         
         # Apply PANet FPN
-        fpn_features = self.fpn(features)
+        fpn_features = {str(k): v for k, v in self.fpn(features).items()}
         print("FPN features computed. Shapes:")
         for idx, feat in fpn_features.items():
             print(f"FPN level {idx} shape: {feat.shape}")
