@@ -66,7 +66,7 @@ class ModifiedFasterRCNN(nn.Module):
         )
 
         # Region Proposal Network
-        anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
+        anchor_sizes = ((32,), (64,), (128,), (256,))  # Now 4 sizes, matching our 4 feature maps
         aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
         rpn_anchor_generator = AnchorGenerator(
             sizes=anchor_sizes, aspect_ratios=aspect_ratios
