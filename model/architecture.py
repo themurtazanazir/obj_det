@@ -120,6 +120,7 @@ class ModifiedFasterRCNN(nn.Module):
     def forward(self, images, targets=None):
         if self.training and targets is None:
             raise ValueError("In training mode, targets should be passed")
+        print(f"{targets=}")
 
         # Handle single image or list of images
         if isinstance(images, (list, tuple)):

@@ -114,34 +114,13 @@ class CocoDataModule(pl.LightningDataModule):
     def collate_fn(self, batch):
         """Custom collate function to handle variable size inputs"""
         images = []
-        all_labels = []
-        all_boxes = []
-        all_areas = []
-        all_iscrowd = []
-        all_image_ids = []
+        targets = []
 
         for img, target in batch:
             images.append(img)
-            all_labels.append(target["labels"])
-            all_boxes.append(target["boxes"])
-            all_areas.append(target["area"])
-            all_iscrowd.append(target["iscrowd"])
-            all_image_ids.append(target["image_id"])
+            targets.append(target)
 
-        # Combine all targets into a single dictionary
-        combined_targets = {
-            "labels": torch.cat(all_labels),
-            "boxes": torch.cat(all_boxes),
-            "area": torch.cat(all_areas),
-            "iscrowd": torch.cat(all_iscrowd),
-            "image_id": (
-                torch.stack(all_image_ids)
-                if all_image_ids[0].dim() == 0
-                else torch.cat(all_image_ids)
-            ),
-        }
-
-        return images, combined_targets
+        return images, targets
 
     def train_dataloader(self):
         return DataLoader(
