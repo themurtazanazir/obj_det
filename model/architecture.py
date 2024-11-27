@@ -161,8 +161,12 @@ class ModifiedFasterRCNN(nn.Module):
 
             # Calculate losses
             return {
-                "loss_classifier": F.cross_entropy(class_logits, targets["labels"]),
-                "loss_box_reg": F.smooth_l1_loss(box_regression, targets["boxes"]),
+                "loss_classifier": F.cross_entropy(
+                    class_logits, [target["labels"] for target in targets]
+                ),
+                "loss_box_reg": F.smooth_l1_loss(
+                    box_regression, [target["boxes"] for target in targets]
+                ),
                 **rpn_losses,
             }
         else:
