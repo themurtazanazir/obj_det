@@ -78,7 +78,7 @@ class FasterRCNNModule(pl.LightningModule):
         if self.val_coco is not None:
             all_image_id = targets["image_id"]
 
-            for prediction, (image_id, boxes, scores, labels) in zip(
+            for prediction, image_id in zip(
                 predictions, all_image_id
             ):
                 image_id = image_id.item()
