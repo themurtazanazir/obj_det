@@ -66,7 +66,12 @@ class ModifiedFasterRCNN(nn.Module):
         )
 
         # Region Proposal Network
-        anchor_sizes = ((32,), (64,), (128,), (256,))  # Now 4 sizes, matching our 4 feature maps
+        anchor_sizes = (
+            (32,),
+            (64,),
+            (128,),
+            (256,),
+        )  # Now 4 sizes, matching our 4 feature maps
         aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
         rpn_anchor_generator = AnchorGenerator(
             sizes=anchor_sizes, aspect_ratios=aspect_ratios
@@ -129,15 +134,10 @@ class ModifiedFasterRCNN(nn.Module):
             images = ImageList(batched_imgs, image_sizes)
 
         # Get backbone features
-        print("Input image shape:", images.tensors.shape)
         features = self.backbone_features(images.tensors)
-        print("Features extracted. Number of feature maps:", len(features))
 
         # Apply PANet FPN
         fpn_features = {str(k): v for k, v in self.fpn(features).items()}
-        print("FPN features computed. Shapes:")
-        for idx, feat in fpn_features.items():
-            print(f"FPN level {idx} shape: {feat.shape}")
         # Generate proposals
         proposals, rpn_losses = self.rpn(
             images,

@@ -100,6 +100,7 @@ class CocoDataModule(pl.LightningDataModule):
             }
         
         return target_dict    
+    
     def collate_fn(self, batch):
         """Custom collate function to handle variable size inputs"""
         images = []
@@ -107,7 +108,15 @@ class CocoDataModule(pl.LightningDataModule):
         
         for img, target in batch:
             images.append(img)
-            targets.append(target)
+            # Ensure each target dictionary has all required keys
+            processed_target = {
+                'boxes': target['boxes'],
+                'labels': target['labels'],
+                'image_id': target['image_id'],
+                'area': target['area'],
+                'iscrowd': target['iscrowd']
+            }
+            targets.append(processed_target)
         
         return images, targets
     
