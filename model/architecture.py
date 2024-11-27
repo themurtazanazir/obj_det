@@ -159,14 +159,14 @@ class ModifiedFasterRCNN(nn.Module):
             class_logits = self.cls_head(box_features)
             box_regression = self.reg_head(box_features)
 
+            # Concatenate targets from batch
+            batch_labels = torch.cat([t["labels"] for t in targets])
+            batch_boxes = torch.cat([t["boxes"] for t in targets])
+
             # Calculate losses
             return {
-                "loss_classifier": F.cross_entropy(
-                    class_logits, [target["labels"] for target in targets]
-                ),
-                "loss_box_reg": F.smooth_l1_loss(
-                    box_regression, [target["boxes"] for target in targets]
-                ),
+                "loss_classifier": F.cross_entropy(class_logits, batch_labels),
+                "loss_box_reg": F.smooth_l1_loss(box_regression, batch_boxes),
                 **rpn_losses,
             }
         else:
