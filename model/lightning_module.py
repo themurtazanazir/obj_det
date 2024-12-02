@@ -76,6 +76,8 @@ class FasterRCNNModule(pl.LightningModule):
 
         # Store predictions for COCO evaluation
         if self.val_coco is not None:
+            if isinstance(predictions, tuple) and len(predictions)==2:
+                predictions = predictions[0]
             for prediction, target in zip(predictions, targets):
                 image_id = target["image_id"].item()
                 boxes = prediction["boxes"].cpu()
