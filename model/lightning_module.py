@@ -57,45 +57,52 @@ class FasterRCNNModule(pl.LightningModule):
         # Get predictions (inference mode)
         predictions = self.model(images)
 
-        # Calculate validation losses (training mode)
-        loss_dict = self.model(images, targets)
-
-        # Handle losses differently based on what's returned
-        if isinstance(loss_dict, dict):  # Training mode returns dict of losses
-            total_loss = sum(loss for loss in loss_dict.values())
-            # Log validation losses
-            for name, loss in loss_dict.items():
-                self.log(f"val_{name}", loss, prog_bar=True)
-        else:  # Inference mode returns list of predictions
-            total_loss = torch.tensor(
-                0.0, device=self.device
-            )  # No loss in inference mode
-            predictions = (
-                loss_dict  # In inference mode, loss_dict actually contains predictions
-            )
-
         # Store predictions for COCO evaluation
         if self.val_coco is not None:
-            if isinstance(predictions, tuple) and len(predictions)==2:
+            if isinstance(predictions, tuple) and len(predictions) == 2:
                 predictions = predictions[0]
             for prediction, target in zip(predictions, targets):
-                image_id = target["image_id"].item()
+                image_id = int(target["image_id"].item())
+
+                # Check if this image_id exists in the validation set
+                if image_id not in self.val_coco.getImgIds():
+                    continue
+
                 boxes = prediction["boxes"].cpu()
                 scores = prediction["scores"].cpu()
                 labels = prediction["labels"].cpu()
 
                 for box, score, label in zip(boxes, scores, labels):
-                    x1, y1, x2, y2 = box.tolist()
-                    bbox = [x1, y1, x2 - x1, y2 - y1]
+                    # Only add predictions with scores above a threshold
+                    if score > 0.05:  # You can adjust this threshold
+                        x1, y1, x2, y2 = box.tolist()
+                        bbox = [
+                            x1,
+                            y1,
+                            x2 - x1,
+                            y2 - y1,
+                        ]  # Convert to COCO format [x,y,width,height]
 
-                    self.val_predictions.append(
-                        {
-                            "image_id": image_id,
-                            "category_id": int(label),
-                            "bbox": bbox,
-                            "score": float(score),
-                        }
-                    )
+                        self.val_predictions.append(
+                            {
+                                "image_id": int(image_id),  # Ensure it's an integer
+                                "category_id": int(label),
+                                "bbox": [
+                                    float(x) for x in bbox
+                                ],  # Ensure all values are float
+                                "score": float(score),
+                            }
+                        )
+
+        # Calculate validation losses (training mode)
+        loss_dict = self.model(images, targets)
+
+        if isinstance(loss_dict, dict):
+            total_loss = sum(loss for loss in loss_dict.values())
+            for name, loss in loss_dict.items():
+                self.log(f"val_{name}", loss, prog_bar=True)
+        else:
+            total_loss = torch.tensor(0.0, device=self.device)
 
         return total_loss
 
