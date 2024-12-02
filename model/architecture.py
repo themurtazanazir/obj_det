@@ -135,7 +135,7 @@ class ModifiedFasterRCNN(nn.Module):
 
             for img, pad_img in zip(images, batched_imgs):
                 pad_img[..., : img.shape[-2], : img.shape[-1]].copy_(img)
-
+losses
             image_sizes = [img.shape[-2:] for img in images]
             images = ImageList(batched_imgs, image_sizes)
 
@@ -152,7 +152,7 @@ class ModifiedFasterRCNN(nn.Module):
 
         if self.training:
             # ROI heads forward pass (this handles all the matching and loss computation)
-            roi_losses = self.roi_heads(
+            _, roi_losses = self.roi_heads(
                 fpn_features, proposals, images.image_sizes, targets
             )
 
@@ -163,7 +163,7 @@ class ModifiedFasterRCNN(nn.Module):
             return losses
         else:
             # Inference mode
-            detections = self.roi_heads(fpn_features, proposals, images.image_sizes)
+            detections, _ = self.roi_heads(fpn_features, proposals, images.image_sizes)
             return detections
 
     def postprocess_detections(
