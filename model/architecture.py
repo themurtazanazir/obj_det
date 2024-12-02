@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional
 from efficientnet_pytorch import EfficientNet
 from torchvision.ops import MultiScaleRoIAlign, box_iou, nms
+from torchvision.models.detection.roi_heads import RoIHeads
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.rpn import (
     RegionProposalNetwork,
     RPNHead,
@@ -39,11 +41,6 @@ class ModifiedFasterRCNN(nn.Module):
         )
 
         # Extract features from these blocks
-        # EfficientNet-B7 block output channels:
-        # Block 18: 224 channels
-        # Block 25: 384 channels
-        # Block 31: 640 channels
-        # Block 38: 2560 channels
         self.backbone_features = IntermediateLayerGetter(
             self.backbone,
             return_indices={
@@ -60,18 +57,15 @@ class ModifiedFasterRCNN(nn.Module):
         # PANet FPN (will adapt input channels to 256)
         self.fpn = PANetFPN(self.backbone_channels, 256)
 
-        # RoI Align
-        self.roi_align = MultiScaleRoIAlign(
-            featmap_names=["0", "1", "2", "3"], output_size=7, sampling_ratio=2
+        # RoI pooling
+        self.box_roi_pool = MultiScaleRoIAlign(
+            featmap_names=["0", "1", "2", "3"],
+            output_size=7,
+            sampling_ratio=2
         )
 
         # Region Proposal Network
-        anchor_sizes = (
-            (32,),
-            (64,),
-            (128,),
-            (256,),
-        )  # Now 4 sizes, matching our 4 feature maps
+        anchor_sizes = ((32,), (64,), (128,), (256,))
         aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
         rpn_anchor_generator = AnchorGenerator(
             sizes=anchor_sizes, aspect_ratios=aspect_ratios
@@ -94,33 +88,40 @@ class ModifiedFasterRCNN(nn.Module):
             nms_thresh=0.7,
         )
 
-        # Box head
+        # Box predictor
         representation_size = 1024
-        self.box_head = nn.Sequential(
-            nn.Flatten(start_dim=1),
-            nn.Linear(256 * 7 * 7, representation_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(representation_size, representation_size),
-            nn.ReLU(inplace=True),
+        out_channels = 256 * 7 * 7  # roi_align output channels * output size^2
+        
+        # Create box predictor
+        self.box_predictor = FastRCNNPredictor(out_channels, representation_size, num_classes)
+
+        # ROI heads
+        self.roi_heads = RoIHeads(
+            # Box
+            box_roi_pool=self.box_roi_pool,
+            box_head=self.box_predictor.fc6,  # First FC layers
+            box_predictor=self.box_predictor.cls_score,  # Classification layer
+            # Other parameters
+            fg_iou_thresh=0.5,
+            bg_iou_thresh=0.5,
+            batch_size_per_image=512,
+            positive_fraction=0.25,
+            bbox_reg_weights=None,
+            score_thresh=0.05,
+            nms_thresh=0.5,
+            detections_per_img=100,
         )
 
-        # Separate prediction heads
-        self.cls_head = nn.Linear(representation_size, num_classes)
-        self.reg_head = nn.Linear(representation_size, num_classes * 4)
-
-        # Initialize weights
-        for module in [self.box_head, self.cls_head, self.reg_head]:
-            for layer in module.modules():
-                if isinstance(layer, nn.Linear):
-                    nn.init.kaiming_normal_(
-                        layer.weight, mode="fan_out", nonlinearity="relu"
-                    )
-                    nn.init.constant_(layer.bias, 0)
+        # Initialize the FastRCNNPredictor weights
+        for name, param in self.box_predictor.named_parameters():
+            if "weight" in name:
+                nn.init.kaiming_normal_(param, mode="fan_out", nonlinearity="relu")
+            elif "bias" in name:
+                nn.init.constant_(param, 0)
 
     def forward(self, images, targets=None):
         if self.training and targets is None:
             raise ValueError("In training mode, targets should be passed")
-        print(f"{targets=}")
 
         # Handle single image or list of images
         if isinstance(images, (list, tuple)):
@@ -139,49 +140,36 @@ class ModifiedFasterRCNN(nn.Module):
 
         # Apply PANet FPN
         fpn_features = {str(k): v for k, v in self.fpn(features).items()}
+
         # Generate proposals
         proposals, rpn_losses = self.rpn(
             images,
             fpn_features,
-            targets,
+            targets if self.training else None
         )
 
         if self.training:
-            # Apply RoI Align and get pooled features
-            pooled_features = self.roi_align(
-                fpn_features, proposals, images.image_sizes
+            # ROI heads forward pass (this handles all the matching and loss computation)
+            roi_losses = self.roi_heads(
+                fpn_features,
+                proposals,
+                images.image_sizes,
+                targets
             )
-
-            # Box head
-            box_features = self.box_head(pooled_features)
-
-            # Predictions
-            class_logits = self.cls_head(box_features)
-            box_regression = self.reg_head(box_features)
-
-            # Concatenate targets from batch
-            batch_labels = torch.cat([t["labels"] for t in targets])
-            batch_boxes = torch.cat([t["boxes"] for t in targets])
-
-            # Calculate losses
-            return {
-                "loss_classifier": F.cross_entropy(class_logits, batch_labels),
-                "loss_box_reg": F.smooth_l1_loss(box_regression, batch_boxes),
-                **rpn_losses,
-            }
+            
+            # Combine RPN and ROI losses
+            losses = {}
+            losses.update(rpn_losses)
+            losses.update(roi_losses)
+            return losses
         else:
             # Inference mode
-            pooled_features = self.roi_align(
-                fpn_features, proposals, images.image_sizes
+            detections = self.roi_heads(
+                fpn_features,
+                proposals,
+                images.image_sizes
             )
-
-            box_features = self.box_head(pooled_features)
-            class_logits = self.cls_head(box_features)
-            box_regression = self.reg_head(box_features)
-
-            return self.postprocess_detections(
-                class_logits, box_regression, proposals, images.image_sizes
-            )
+            return detections
 
     def postprocess_detections(
         self,
@@ -190,57 +178,34 @@ class ModifiedFasterRCNN(nn.Module):
         proposals: List[torch.Tensor],
         image_sizes: List[Tuple[int, int]],
     ) -> List[Dict[str, torch.Tensor]]:
-        """
-        Perform post-processing on the outputs of the detector.
-
-        Args:
-            class_logits (Tensor): Classification predictions
-            box_regression (Tensor): Box regression predictions
-            proposals (List[Tensor]): Proposed regions
-            image_sizes (List[Tuple[int, int]]): Original image sizes
-
-        Returns:
-            List[Dict[str, Tensor]]: List of dictionaries containing:
-                - boxes (Tensor): Predicted boxes
-                - labels (Tensor): Predicted labels
-                - scores (Tensor): Prediction scores
-        """
         device = class_logits.device
         num_classes = class_logits.shape[-1]
         boxes_per_image = [boxes_in_image.shape[0] for boxes_in_image in proposals]
 
-        # Apply softmax to class predictions
         pred_scores = F.softmax(class_logits, -1)
 
-        # Split predictions per image
         pred_boxes = box_regression.split(boxes_per_image, 0)
         pred_scores = pred_scores.split(boxes_per_image, 0)
 
         results = []
         for boxes, scores, image_size in zip(pred_boxes, pred_scores, image_sizes):
-            # Create labels for each prediction
             labels = torch.arange(num_classes, device=device)
             labels = labels.view(1, -1).expand_as(scores)
 
-            # Remove predictions with the background label
             boxes = boxes[:, 1:]
             scores = scores[:, 1:]
             labels = labels[:, 1:]
 
-            # Flatten predictions
             boxes = boxes.reshape(-1, 4)
             scores = scores.reshape(-1)
             labels = labels.reshape(-1)
 
-            # Remove low scoring boxes
             inds = torch.where(scores > 0.05)[0]
             boxes, scores, labels = boxes[inds], scores[inds], labels[inds]
 
-            # Apply NMS
             keep = nms(boxes, scores, 0.5)
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
-            # Keep top-k scoring predictions
             keep = torch.argsort(scores, dim=0, descending=True)[:100]
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
