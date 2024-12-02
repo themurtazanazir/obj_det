@@ -99,6 +99,7 @@ class FasterRCNNModule(pl.LightningModule):
 
         if isinstance(loss_dict, dict):
             total_loss = sum(loss for loss in loss_dict.values())
+            self.log("val_loss", total_loss, prog_bar=True)
             for name, loss in loss_dict.items():
                 self.log(f"val_{name}", loss, prog_bar=True)
         else:
