@@ -90,15 +90,22 @@ class ModifiedFasterRCNN(nn.Module):
         representation_size = 1024
         out_channels = 256 * 7 * 7  # roi_align output channels * output size^2
 
+        self.box_head = nn.Sequential(
+            nn.Flatten(start_dim=1),
+            nn.Linear(out_channels, representation_size),
+            nn.ReLU(),
+            nn.Linear(representation_size, representation_size),
+            nn.ReLU(),
+        )
+
         # Create box predictor
-        self.box_predictor = FastRCNNPredictor(out_channels, num_classes)
+        self.box_predictor = FastRCNNPredictor(representation_size, num_classes)
 
         # ROI heads
         self.roi_heads = RoIHeads(
             box_roi_pool=self.box_roi_pool,
-            box_head=self.box_predictor.fc,  # FC layers
-            box_predictor=self.box_predictor,  # Full predictor
-            # Other parameters
+            box_head=self.box_head,
+            box_predictor=self.box_predictor,
             fg_iou_thresh=0.5,
             bg_iou_thresh=0.5,
             batch_size_per_image=512,
