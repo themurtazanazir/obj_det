@@ -59,9 +59,7 @@ class ModifiedFasterRCNN(nn.Module):
 
         # RoI pooling
         self.box_roi_pool = MultiScaleRoIAlign(
-            featmap_names=["0", "1", "2", "3"],
-            output_size=7,
-            sampling_ratio=2
+            featmap_names=["0", "1", "2", "3"], output_size=7, sampling_ratio=2
         )
 
         # Region Proposal Network
@@ -91,16 +89,15 @@ class ModifiedFasterRCNN(nn.Module):
         # Box predictor
         representation_size = 1024
         out_channels = 256 * 7 * 7  # roi_align output channels * output size^2
-        
+
         # Create box predictor
-        self.box_predictor = FastRCNNPredictor(out_channels, representation_size, num_classes)
+        self.box_predictor = FastRCNNPredictor(out_channels, num_classes)
 
         # ROI heads
         self.roi_heads = RoIHeads(
-            # Box
             box_roi_pool=self.box_roi_pool,
-            box_head=self.box_predictor.fc6,  # First FC layers
-            box_predictor=self.box_predictor.cls_score,  # Classification layer
+            box_head=self.box_predictor.fc,  # FC layers
+            box_predictor=self.box_predictor,  # Full predictor
             # Other parameters
             fg_iou_thresh=0.5,
             bg_iou_thresh=0.5,
@@ -143,20 +140,15 @@ class ModifiedFasterRCNN(nn.Module):
 
         # Generate proposals
         proposals, rpn_losses = self.rpn(
-            images,
-            fpn_features,
-            targets if self.training else None
+            images, fpn_features, targets if self.training else None
         )
 
         if self.training:
             # ROI heads forward pass (this handles all the matching and loss computation)
             roi_losses = self.roi_heads(
-                fpn_features,
-                proposals,
-                images.image_sizes,
-                targets
+                fpn_features, proposals, images.image_sizes, targets
             )
-            
+
             # Combine RPN and ROI losses
             losses = {}
             losses.update(rpn_losses)
@@ -164,11 +156,7 @@ class ModifiedFasterRCNN(nn.Module):
             return losses
         else:
             # Inference mode
-            detections = self.roi_heads(
-                fpn_features,
-                proposals,
-                images.image_sizes
-            )
+            detections = self.roi_heads(fpn_features, proposals, images.image_sizes)
             return detections
 
     def postprocess_detections(
