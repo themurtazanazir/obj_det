@@ -22,8 +22,8 @@ def main(args):
         filename='{epoch}-{val_loss:.2f}',
         save_top_k=3,
         verbose=True,
-        monitor='val_loss',
-        mode='min'
+        monitor='val/AP',
+        mode='max'
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
